@@ -21,6 +21,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ./app
+          load: true
           push: false
           tags: high-availability-app:test
 
