@@ -1,240 +1,416 @@
-# High Availability Web Application using AWS and Floci
+# High Availability Web Application with AWS, Docker & GitHub Actions
 
-## About the Project
+## What I built
 
-I built this project to practice designing a highly available web application using AWS-style infrastructure without deploying resources to a real AWS account.
+I built a highly available web application environment locally using **Floci**, an AWS-compatible environment.
 
-I used **Floci** to run the AWS-compatible environment locally and used the **AWS CLI** to create and configure the infrastructure.
+The project started as an AWS architecture exercise and grew into a DevOps project where I also added Docker and GitHub Actions CI/CD.
 
-The main goal was to understand how networking, load balancing, private application servers, health checks, and Auto Scaling work together.
+The main idea was to keep the application servers private, put an Application Load Balancer in front of them, use an Auto Scaling Group for the application tier, and automate the application build and deployment process.
 
-> **Note:** This is a local AWS-compatible implementation using Floci. It is not a deployment to a live AWS account.
+> **Important:** The infrastructure in this repository was built and tested locally using Floci. It was not deployed to a live AWS account.
 
 
 ## Architecture
 
+
                          Internet
                             |
                             v
-                Application Load Balancer
-                         HTTP :80
+                +-----------------------+
+                | Application Load      |
+                | Balancer :80          |
+                +-----------------------+
                             |
                             v
-                      Target Group
-                         HTTP :8081
-                       /           \
-                      /             \
-                     v               v
-              EC2 / ASG #1     EC2 / ASG #2
-                 Nginx              Nginx
-                  :8081              :8081
-                     \               /
-                      \             /
-                       Auto Scaling Group
-                    Min: 2 | Desired: 2 | Max: 4
+                +-----------------------+
+                | Target Group :8081    |
+                +-----------------------+
+                       /          \
+                      /            \
+                     v              v
+             +-------------+  +-------------+
+             | EC2 / ASG   |  | EC2 / ASG   |
+             | Nginx:8081  |  | Nginx:8081  |
+             | AZ1         |  | AZ2         |
+             +-------------+  +-------------+
 
 
-The application servers are placed in private subnets, while the ALB provides the public entry point.
+### Network layout
 
-
-
-## Network Design
-
-The VPC uses:
 
 VPC: 10.0.0.0/16
 
-
-Two Availability Zones were used.
-
-
 AZ1
-├── Public Subnet   10.0.1.0/24
-└── Private Subnet  10.0.3.0/24
+├── Public Subnet  10.0.1.0/24
+│   └── ALB / NAT
+└── Private Subnet 10.0.3.0/24
+    └── Application Server
 
 AZ2
-├── Public Subnet   10.0.2.0/24
-└── Private Subnet  10.0.4.0/24
+├── Public Subnet  10.0.2.0/24
+│   └── ALB / NAT
+└── Private Subnet 10.0.4.0/24
+    └── Application Server
 
 
-The public subnets use an Internet Gateway for internet-bound traffic.
+## Infrastructure I created
 
-The private subnets use NAT gateways for outbound connectivity.
+### VPC
 
-
-Private AZ1 → NAT Gateway AZ1 → Internet
-Private AZ2 → NAT Gateway AZ2 → Internet
+I created a custom VPC with:
 
 
-I used one NAT gateway per Availability Zone so that each private subnet has its own outbound path.
+10.0.0.0/16
 
----
 
-## AWS Components Used
+The VPC was divided into public and private subnets across two Availability Zones.
 
-* VPC
-* Public and private subnets
-* Route tables
-* Internet Gateway
-* NAT Gateways
-* Security Groups
-* EC2
-* Nginx
-* Application Load Balancer
-* Target Group
-* Launch Template
-* Auto Scaling Group
+### Public subnets
 
----
+The public subnets use a route table with:
+
+0.0.0.0/0 → Internet Gateway
+`
+
+This allows internet-facing resources to communicate with the internet.
+
+### Private subnets
+
+The private subnets use:
+
+
+0.0.0.0/0 → NAT Gateway
+
+
+The application servers are placed in these private subnets instead of exposing them directly to the internet.
+
+### Internet Gateway
+
+I created and attached an Internet Gateway to the VPC and used it for the public subnet route.
+
+### NAT Gateways
+
+I created one NAT Gateway for each Availability Zone.
+
+
+Private AZ1 → NAT AZ1 → Internet
+Private AZ2 → NAT AZ2 → Internet
+
+
+This gives the private instances an outbound path while keeping them out of the public-facing tier.
+
+
 
 ## Security Groups
 
-Two security groups were created.
+I created separate security groups for the ALB and application servers.
 
 ### ALB Security Group
 
-The ALB security group allows:
+The ALB accepts HTTP traffic:
 
 
-TCP 80 from 0.0.0.0/0
+TCP 80
+Source: 0.0.0.0/0
 
-
-This allows HTTP requests to reach the public load balancer.
 
 ### Application Security Group
 
-The application security group allows application traffic on:
+The application tier uses:
 
 
 TCP 8081
 
 
-The main application access is intended to come from the ALB security group.
+Traffic from the ALB security group is allowed to reach the application servers.
 
-An additional VPC CIDR rule was also required for local Floci networking.
+A VPC CIDR rule for port 8081 was also required for the local Floci networking behavior.
 
----
 
-## Application Servers
 
-The application tier uses Ubuntu EC2 instances.
+## Application
 
-Each instance automatically installs Nginx using EC2 User Data.
+The first version of the application was a simple Nginx-based web page.
 
-The application listens on:
+The application returned responses such as:
+
+
+Hello from Application Server 1
+Hello from Application Server 2
+
+
+Later, the Dockerized version served:
+
+
+Hello from Dockerized Application
+
+
+The application is intentionally simple because the focus of this project is the infrastructure and deployment workflow around it.
+
+
+
+## EC2 and User Data
+
+I used Ubuntu 24.04 EC2 instances with:
+
+
+AMI: ami-ubuntu2404-amd64
+Instance type: t3.micro
+
+
+I used EC2 User Data to automatically install and configure the application instead of manually configuring each instance.
+
+The application ultimately listens on:
 
 
 8081
 
 
-The original design attempted to use port 80, but this caused a problem in the Floci environment.
-
 ---
 
-## Problem I Faced: Port 80 Conflict
+## Problem I faced: Nginx could not use port 80
 
-One of the main troubleshooting issues in this project happened when Nginx was configured to listen on port 80.
-
-Nginx failed with:
+One of the main problems I ran into was:
 
 
-bind() to 0.0.0.0:80 failed
-Address already in use
+nginx: [emerg] bind() to 0.0.0.0:80 failed
+(98: Address already in use)
 
 
-Instead of rebuilding the environment, I investigated the EC2 container and Floci processes.
+At first I expected Nginx to run on the normal HTTP port 80.
 
-The investigation showed that Floci was already using port 80 for its metadata service.
+I investigated the Floci EC2 container and found that port 80 was already being used by Floci's metadata service.
 
-### Resolution
+I changed the application to use port 8081 instead.
 
-I changed the application architecture to use:
-
-
-ALB listener: 80
-Target Group: 8081
-Nginx: 8081
-
-
-This allowed the public interface to remain on normal HTTP port 80 while avoiding the port conflict inside the Floci EC2 environment.
-
----
-
-## Application Load Balancer
-
-The ALB acts as the single public entry point.
+The final path became:
 
 
 Client
-  |
-  v
+  ↓
 ALB :80
-  |
-  v
+  ↓
 Target Group :8081
-  |
-  +----> Application Server
-  |
-  +----> Application Server
+  ↓
+Nginx :8081
 
 
-The Target Group performs HTTP health checks on the application servers.
-
-Only healthy targets should receive application traffic.
-
----
-
-## Auto Scaling Group
-
-The application tier was moved from manually created EC2 instances to an Auto Scaling Group.
-
-Configuration:
+This solved the conflict without rebuilding the whole environment.
 
 
-Minimum capacity: 2
-Desired capacity: 2
-Maximum capacity: 4
+
+## Application Load Balancer
+
+I created an Application Load Balancer as the public entry point.
+
+The listener is:
 
 
-The ASG launches instances using a Launch Template.
+HTTP :80
 
-The Launch Template defines the AMI, instance type, security group, and User Data used to configure the application server.
 
----
+The ALB forwards requests to the target group on port 8081.
 
-## Troubleshooting the ASG Targets
+The target group performs HTTP health checks against the application.
 
-After the Auto Scaling Group launched its instances, the new targets initially appeared as unhealthy.
 
-I tested the instances directly through their Floci port forwarders.
 
-The application returned successfully from both instances:
+## Target Group and Health Checks
+
+The target group was configured with:
+
+
+Protocol: HTTP
+Port: 8081
+Health check path: /
+
+
+During troubleshooting, some targets initially showed:
+
+
+Target.FailedHealthChecks
+
+
+Instead of assuming the ALB was broken, I tested the application directly on the EC2 port forwarders.
+
+The direct tests returned:
 
 
 Hello from Auto Scaling Application Server
 
 
-I then checked the Target Group health and target registration, registered the instances explicitly on port `8081`, and re-tested the ALB.
+I then checked target registration and health and registered the ASG instances on port 8081.
 
-The ALB then successfully returned the application response.
-
-This helped me isolate the issue layer by layer:
+After the fix, both application instances became healthy targets.
 
 
-EC2
- ↓
-Application port
- ↓
-Target Group
- ↓
-Health Check
- ↓
-ALB
+
+## Auto Scaling Group
+
+I created a Launch Template and Auto Scaling Group for the application tier.
+
+The ASG configuration was:
 
 
----
+Minimum: 2
+Desired: 2
+Maximum: 4
+
+
+The instances were launched into the two private subnets.
+
+The final ASG instances became healthy targets behind the ALB.
+
+
+
+## Docker
+
+After completing the infrastructure, I containerized the application.
+
+The Dockerfile uses Nginx as the base image:
+
+dockerfile
+FROM nginx:alpine
+COPY index.html /usr/share/nginx/html/index.html
+EXPOSE 80
+
+
+The image can be built locally with:
+
+bash
+docker build -t high-availability-app:latest ./app
+
+
+and run with:
+
+bash
+docker run -d \
+  --name high-availability-app \
+  -p 8081:80 \
+  high-availability-app:latest
+
+
+The container serves the application on port 80 internally.
+
+
+
+## GitHub Actions CI
+
+I added GitHub Actions to automatically test the Docker application.
+
+The CI pipeline does the following:
+
+
+Git push
+   ↓
+Checkout repository
+   ↓
+Build Docker image
+   ↓
+Run container
+   ↓
+Test application
+
+
+The test checks that the expected application response is returned.
+
+This means a change pushed to `main` is automatically validated instead of relying only on manual testing.
+
+
+
+## GitHub Container Registry
+
+The CI/CD workflow also publishes the Docker image to GitHub Container Registry.
+
+The image is tagged using:
+
+
+latest
+Git commit SHA
+
+
+Example:
+
+
+ghcr.io/asthak-2505/high-availability-app:latest
+
+
+This gives the application image a consistent location and makes deployments reproducible by image version.
+
+
+
+## Continuous Deployment
+
+I configured a **self-hosted GitHub Actions runner** on my laptop because Floci is running locally.
+
+The deployment flow is:
+
+
+Git push
+   ↓
+GitHub Actions
+   ↓
+Build
+   ↓
+Test
+   ↓
+Push Docker image to GHCR
+   ↓
+Self-hosted runner
+   ↓
+Docker pull
+   ↓
+Start updated container
+   ↓
+Health check
+
+
+The deployment script pulls the latest image, removes the previous deployment container, starts the new container, and checks the application response.
+
+
+
+## Why a self-hosted runner?
+
+The Floci endpoint runs on my local machine:
+
+
+http://localhost:4566
+
+
+A normal GitHub-hosted runner cannot access services running on my laptop's localhost.
+
+Using a self-hosted runner allows the deployment job to execute on the same machine where Floci is running.
+
+
+
+## Troubleshooting the CI pipeline
+
+The Docker image initially failed to run inside GitHub Actions because the Buildx action built the image but did not load it into the runner's local Docker image store.
+
+The workflow was updated to use:
+
+yaml
+load: true
+
+
+After that, the test container could use the image successfully.
+
+I also encountered a GHCR tagging problem because Docker image repository names must be lowercase.
+
+The image name was changed from the mixed-case GitHub username to:
+
+
+ghcr.io/asthak-2505/high-availability-app
+
+
+After those changes, the CI pipeline completed successfully.
+
+
 
 ## Verification
+
+The infrastructure was verified using AWS CLI commands against the local Floci endpoint.
 
 The final Auto Scaling instances were:
 
@@ -243,50 +419,19 @@ i-0dae2f78081466abb
 i-2332238e50bc10166
 
 
-Both became healthy targets on port `8081`.
+Both became healthy targets on port 8081.
 
-The Auto Scaling Group was configured as:
-
-
-Min: 2
-Desired: 2
-Max: 4
-
-
-The final ALB test successfully returned:
+The final application test through the ALB returned:
 
 
 Hello from Auto Scaling Application Server
 
 
----
-
-## End-to-End Request Flow
+The Docker CI/CD pipeline also successfully built, tested, published, and deployed the Dockerized application locally.
 
 
-Internet
-   |
-   v
-Application Load Balancer :80
-   |
-   v
-Target Group :8081
-   |
-   +-------------------+
-   |                   |
-   v                   v
-EC2 Instance 1      EC2 Instance 2
-Nginx :8081         Nginx :8081
-   |                   |
-   +---------+---------+
-             |
-             v
-      Application Response
 
-
----
-
-## Repository Structure
+## Repository structure
 
 
 high-availability-web-app-floci/
@@ -295,86 +440,96 @@ high-availability-web-app-floci/
 ├── .gitignore
 ├── docker-compose.yml
 │
-└── infrastructure/
-    ├── architecture.md
-    ├── setup-commands.sh
-    └── verification.md
+├── app/
+│   ├── Dockerfile
+│   └── index.html
+│
+├── infrastructure/
+│   ├── architecture.md
+│   ├── setup-commands.sh
+│   └── verification.md
+│
+├── scripts/
+│   └── deploy-local.sh
+│
+└── .github/
+    └── workflows/
+        └── ci-cd.yml
 
 
-### `setup-commands.sh`
-
-Contains the AWS CLI commands used while building the infrastructure, including VPC, subnet, routing, NAT, security groups, EC2, ALB, Target Group, Launch Template, and Auto Scaling configuration.
-
-### `architecture.md`
-
-Contains the architecture and resource details from the completed Floci environment.
-
-### `verification.md`
-
-Contains the final verification results, including healthy targets and successful ALB traffic.
-
----
-
-## Tools and Technologies
+## Technologies used
 
 * Linux
 * Docker
-* Floci
-* AWS CLI
 * Git
 * GitHub
-* Shell scripting
-* AWS VPC
+* GitHub Actions
+* GitHub Container Registry
+* AWS CLI
+* Floci
+* VPC
 * EC2
 * Application Load Balancer
 * Target Groups
 * Auto Scaling
+* Security Groups
+* NAT Gateway
+* Internet Gateway
 * Nginx
+* Shell scripting
 
----
 
-## What I Learned
 
-Through this project I practiced:
+## What I learned from this project
 
-* Designing a VPC across multiple Availability Zones
-* Understanding public vs private subnet routing
-* Using Internet Gateways and NAT Gateways
-* Separating ALB and application security groups
-* Launching and configuring EC2 instances with User Data
-* Using an Application Load Balancer and Target Group
-* Understanding health checks
-* Using Launch Templates and Auto Scaling Groups
-* Debugging networking and application connectivity issues
-* Using Git and GitHub with SSH
-* Reproducing AWS-style infrastructure locally
+This project helped me practice the full path from infrastructure creation to application delivery.
 
----
+I worked with:
+
+* VPC and subnet design
+* Public vs private networking
+* Route tables
+* Internet Gateway and NAT Gateway
+* Security Groups
+* EC2 provisioning
+* User Data
+* Load balancing
+* Target health checks
+* Launch Templates
+* Auto Scaling
+* Docker
+* GitHub Actions
+* Container image publishing
+* Self-hosted runners
+* Deployment automation
+* Troubleshooting using logs, direct connectivity tests, and AWS CLI
+
+The biggest practical lesson was that getting the architecture right is only part of the work. I also had to verify each layer independently and troubleshoot problems such as port conflicts, unhealthy targets, Docker image loading, and container registry naming.
+
+
 
 ## Limitations
 
-This project uses Floci instead of a live AWS account.
+This project uses Floci rather than real AWS infrastructure.
 
-Because of that, some AWS services and behaviors can differ from real AWS, especially around:
+Because of that, some AWS behavior can differ from production AWS, especially around:
 
 * EC2 networking
 * port forwarding
-* Auto Scaling behavior
+* Auto Scaling reconciliation
 * target registration
 * service internals
 
-The project is therefore intended as a hands-on AWS architecture and DevOps learning project implemented in a local environment.
+For that reason, this repository should be considered a **hands-on AWS/DevOps local implementation**, not a production AWS deployment.
 
----
 
-## Future Improvements
 
-Planned improvements for this project include:
+## Future improvements
 
-* Dockerizing the application
-* Adding GitHub Actions CI/CD
-* Adding automated tests
-* Adding container security scanning
-* Converting the infrastructure to Terraform
-* Adding monitoring and logging
-* Testing automated failure recovery and scaling
+The next improvements I plan to add are:
+
+* Terraform for declarative Infrastructure as Code
+* Better application health endpoints
+* Automated scaling/failure tests
+* Monitoring and logging
+* More complete application deployment automation
