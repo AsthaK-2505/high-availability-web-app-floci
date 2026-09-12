@@ -11,29 +11,179 @@ The main idea was to keep the application servers private, put an Application Lo
 > **Important:** The infrastructure in this repository was built and tested locally using Floci. It was not deployed to a live AWS account.
 
 
+
 ## Architecture
 
+The project is divided into two main parts:
 
-                         Internet
-                            |
-                            v
-                +-----------------------+
-                | Application Load      |
-                | Balancer :80          |
-                +-----------------------+
-                            |
-                            v
-                +-----------------------+
-                | Target Group :8081    |
-                +-----------------------+
-                       /          \
-                      /            \
-                     v              v
-             +-------------+  +-------------+
-             | EC2 / ASG   |  | EC2 / ASG   |
-             | Nginx:8081  |  | Nginx:8081  |
-             | AZ1         |  | AZ2         |
-             +-------------+  +-------------+
+1. **AWS-style infrastructure running locally through Floci**
+2. **Docker + GitHub Actions CI/CD for the application**
+
+### Overall architecture
+
+```mermaid
+flowchart TB
+    U[Internet / User]
+
+    subgraph VPC["VPC 10.0.0.0/16"]
+        
+        subgraph AZ1["Availability Zone 1"]
+            PUB1["Public Subnet<br/>10.0.1.0/24"]
+            PRI1["Private Subnet<br/>10.0.3.0/24"]
+            EC1["EC2 / ASG Instance<br/>Application"]
+        end
+
+        subgraph AZ2["Availability Zone 2"]
+            PUB2["Public Subnet<br/>10.0.2.0/24"]
+            PRI2["Private Subnet<br/>10.0.4.0/24"]
+            EC2["EC2 / ASG Instance<br/>Application"]
+        end
+
+        ALB["Application Load Balancer<br/>HTTP :80"]
+        TG["Target Group<br/>HTTP :8081"]
+
+        IGW["Internet Gateway"]
+        NAT1["NAT Gateway AZ1"]
+        NAT2["NAT Gateway AZ2"]
+
+        U --> IGW
+        IGW --> ALB
+
+        ALB --> TG
+        TG --> EC1
+        TG --> EC2
+
+        PUB1 --> ALB
+        PUB2 --> ALB
+
+        PRI1 --> EC1
+        PRI2 --> EC2
+
+        PRI1 --> NAT1
+        PRI2 --> NAT2
+        NAT1 --> IGW
+        NAT2 --> IGW
+    end
+```
+
+### Request flow
+
+```text
+User
+  │
+  ▼
+Internet
+  │
+  ▼
+Application Load Balancer :80
+  │
+  ▼
+Target Group :8081
+  │
+  ├───────────────┐
+  ▼               ▼
+EC2 / ASG #1    EC2 / ASG #2
+  │               │
+  ▼               ▼
+Application     Application
+  │               │
+  └───────┬───────┘
+          ▼
+        Response
+```
+
+### Application and CI/CD flow
+
+```mermaid
+flowchart LR
+    DEV[Developer] --> GH[GitHub]
+    GH --> CI[GitHub Actions]
+
+    CI --> TEST[Test Docker Image]
+    TEST --> BUILD[Build Docker Image]
+    BUILD --> GHCR[GitHub Container Registry]
+
+    GHCR --> RUNNER[Self-hosted Runner]
+    RUNNER --> DEPLOY[Deploy Docker Container]
+    DEPLOY --> VERIFY[Deployment Verification]
+
+    VERIFY --> APP[Dockerized Application]
+```
+
+### Final infrastructure relationship
+
+```text
+                    ┌──────────────────────┐
+                    │      GitHub           │
+                    │  Source + Workflows   │
+                    └──────────┬───────────┘
+                               │
+                               ▼
+                    ┌──────────────────────┐
+                    │    GitHub Actions     │
+                    │   CI → Build → Test   │
+                    └──────────┬───────────┘
+                               │
+                               ▼
+                    ┌──────────────────────┐
+                    │        GHCR           │
+                    │    Docker Image       │
+                    └──────────┬───────────┘
+                               │
+                               ▼
+                    ┌──────────────────────┐
+                    │   Self-hosted Runner  │
+                    │    Local Laptop       │
+                    └──────────────────────┘
+
+
+        ┌──────────────────── Local Floci ────────────────────┐
+
+                           Internet
+                              │
+                              ▼
+                       ┌─────────────┐
+                       │     ALB     │
+                       │    :80      │
+                       └──────┬──────┘
+                              │
+                              ▼
+                       ┌─────────────┐
+                       │ Target Group│
+                       │    :8081    │
+                       └──────┬──────┘
+                              │
+                    ┌─────────┴─────────┐
+                    ▼                   ▼
+              ┌───────────┐       ┌───────────┐
+              │ EC2 / ASG │       │ EC2 / ASG │
+              │    AZ1    │       │    AZ2    │
+              └─────┬─────┘       └─────┬─────┘
+                    │                   │
+                    └─────────┬─────────┘
+                              ▼
+                       Docker / App
+```
+
+### Important note about the Docker integration
+
+The **AWS-style infrastructure and Docker CI/CD are currently two validated layers of the project**.
+
+The Floci infrastructure demonstrates:
+
+```text
+VPC → ALB → Target Group → ASG → EC2
+```
+
+The Docker pipeline demonstrates:
+
+```text
+GitHub → GitHub Actions → Docker → GHCR → Self-hosted runner → Deployment
+```
+
+They are documented together as one DevOps project, but the Docker deployment currently runs through the local self-hosted runner rather than replacing the existing ASG application instances.
+
+This distinction is intentional because Floci's EC2 environment has its own container-based implementation and differs from real AWS EC2.
 
 
 ### Network layout
