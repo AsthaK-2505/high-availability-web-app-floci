@@ -1,0 +1,9 @@
+data/
+.env
+.aws/
+*.pem
+*.key
+*.log
+*.swp
+*.tmp
+.DS_Store
